@@ -553,6 +553,12 @@ class Charge(_MainResource, Base):
                              cls._instance_path(charge_id)))
         return _as_object(cls._request('get', cls._collection_path()))
 
+
+    @classmethod
+    def list(cls):
+        return LazyCollection(cls)
+
+
     def reload(self):
         """Reload the charge details.
 
@@ -686,6 +692,10 @@ class Customer(_MainResource, Base):
         return 'customers'
 
     @classmethod
+    def list(cls):
+        return LazyCollection(cls)
+
+    @classmethod
     def _instance_path(cls, customer_id):
         return ('customers', customer_id)
 
@@ -809,6 +819,93 @@ class Customer(_MainResource, Base):
         path = self._instance_path(self._attributes['id']) + ('schedules',)
         schedules = _as_object(self._request('get', path))
         return schedules
+
+
+class LazyCollection:
+    def __init__(self, resource_cls):
+        self.resource_cls = resource_cls
+        self.listing = None
+        self._list_index = 0
+        self._offset = 0
+        self._exhausted = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.listing is None or str(self._list_index) not in self.listing.keys():
+            if self._exhausted:
+                self.stop_iteration()
+            self._next_batch()
+
+        self._list_index += 1
+
+        return _as_object(self.listing[str(self._list_index - 1)])
+
+    def _next_batch(self, limit=5):
+        offset = self._list_index
+
+        data = self.resource_cls._request('get', self.resource_cls._collection_path(), payload={'limit': limit, 'offset': offset})["data"]
+        print("importing new stuff")
+
+        if len(data) > 0:
+            self._add_batch(data, offset)
+
+            if len(data) < limit:
+                    self._exhausted = True
+        else:
+            self.stop_iteration()
+
+    def _add_batch(self, data, initial_index):
+        index = initial_index
+        for i in data:
+            self._add_to_listing(i, index)
+            index += 1
+
+    def _add_to_listing(self, obj, index):
+        if self.listing:
+            self.listing[str(index)] = obj
+        else:
+            self.listing = {str(index): obj}
+
+    def offset(self, **kwargs):
+        limit = kwargs["limit"]
+        offset = kwargs["offset"]
+
+        resources_needed = list(range(offset + 1, offset + limit + 1))
+        resources_cached = self._resources_cached_index()
+        resources_new = list(set(resources_needed) - (set(resources_needed) & set(resources_cached)))
+
+        if len(resources_new) > 0:
+            lower_limit = min(resources_new) - 1
+            higher_limit = max(resources_new)
+
+            new_limit = higher_limit - lower_limit
+
+            new_data = self.resource_cls._request('get', self.resource_cls._collection_path(), payload={'limit': new_limit, 'offset': lower_limit})["data"]
+            self._add_batch(new_data, lower_limit + 1)
+
+        all_data = self.from_listing(min(resources_needed), max(resources_needed))
+
+        return [_as_object(i) for i in all_data]
+
+    def _resources_cached_index(self):
+        if self.listing:
+            return [int(i) for i in self.listing.keys()]
+        else:
+            return []
+
+
+    def from_listing(self, min, max):
+        objects = []
+        for i in range(min, max + 1):
+            objects.append(self.listing[str(i)])
+
+        return objects
+
+    def stop_iteration(self):
+        self._list_index = 0
+        raise StopIteration()
 
 
 class Dispute(_MainResource, Base):
